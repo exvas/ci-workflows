@@ -53,6 +53,18 @@ on:
         description: extra arguments to `bench run-tests` (e.g. --module my_app.tests.test_x)
         type: string
         default: ''
+      require_tests:
+        description: |
+          fail when Frappe ran no tests. false only for an app with no Frappe tests (its tests run elsewhere,
+          e.g. standalone scripts in another job); the check then still proves the app installs
+        type: boolean
+        default: true
+      site_config:
+        description: |
+          more site config, one per line: "<key> <value>"; $DB_PORT, $REDIS_CACHE_PORT and $REDIS_QUEUE_PORT
+          are this job's ports (e.g. "my_redis_url redis://127.0.0.1:$REDIS_CACHE_PORT/15")
+        type: string
+        default: ''
     secrets:
       ssh_key:
         description: read-only deploy key for private extra_apps
@@ -106,9 +118,13 @@ jobs:
         env:
           EXTRA: ${{ inputs.apt_packages }}
         run: |
-          sudo apt-get update -qq
+          # jobs run side by side: wait for another job's apt instead of failing on its lock
+          pkgs=()
           # shellcheck disable=SC2086
-          sudo apt-get install -y -qq mariadb-client $EXTRA
+          for p in mariadb-client $EXTRA; do dpkg -s "$p" >/dev/null 2>&1 || pkgs+=("$p"); done
+          [ ${#pkgs[@]} -eq 0 ] && exit 0
+          sudo apt-get -o DPkg::Lock::Timeout=600 update -qq
+          sudo apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${pkgs[@]}"
 
       # the job's temp dir, not the shared HOME: jobs run side by side
       - name: SSH key for private apps
@@ -143,6 +159,7 @@ jobs:
           HRMS: ${{ inputs.hrms }}
           BEFORE_TESTS: ${{ inputs.erpnext_before_tests }}
           EXTRA_APPS: ${{ inputs.extra_apps }}
+          SITE_CONFIG: ${{ inputs.site_config }}
         run: |
           set -euo pipefail
           base=() order=()
@@ -177,8 +194,18 @@ jobs:
           fi
           for a in "${order[@]}"; do bench --site test_site install-app "$a"; done
           bench --site test_site set-config allow_tests true
+          while read -r k v; do
+            [ -n "${k:-}" ] || continue
+            v=${v//\$DB_PORT/$DB_PORT} v=${v//\$REDIS_CACHE_PORT/$REDIS_CACHE_PORT} v=${v//\$REDIS_QUEUE_PORT/$REDIS_QUEUE_PORT}
+            bench --site test_site set-config "$k" "$v"
+          done <<< "$SITE_CONFIG"
+          # ERPNext's test company, fiscal year and defaults: v15 has a function for it, v16 a test module
           if [ "$ERPNEXT" = true ] && [ "$BEFORE_TESTS" = true ]; then
-            bench --site test_site execute erpnext.setup.utils.before_tests
+            if grep -q "^def before_tests" apps/erpnext/erpnext/setup/utils.py; then
+              bench --site test_site execute erpnext.setup.utils.before_tests
+            else
+              bench --site test_site run-tests --app erpnext --module erpnext.tests.bootstrap_test_data
+            fi
           fi
           bench build
 
@@ -188,9 +215,12 @@ jobs:
           TYPE: server
           APP: ${{ inputs.app }}
           ARGS: ${{ inputs.run_tests_args }}
+          REQUIRE: ${{ inputs.require_tests }}
         run: |
           set -o pipefail
           # shellcheck disable=SC2086
           bench --site test_site run-tests --app "$APP" $ARGS 2>&1 | tee "$RUNNER_TEMP/tests.log"
           # a green check must mean tests ran: a moved test folder or a bad --module ran none
-          grep -qE "^Ran [1-9][0-9]* tests?" "$RUNNER_TEMP/tests.log" || { echo "::error::no tests ran"; exit 1; }
+          grep -qE "^Ran [1-9][0-9]* tests?" "$RUNNER_TEMP/tests.log" && exit 0
+          [ "$REQUIRE" = true ] && { echo "::error::no tests ran"; exit 1; }
+          echo "::notice::no Frappe tests (require_tests: false): the app installed"
