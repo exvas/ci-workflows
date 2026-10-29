@@ -145,9 +145,9 @@ jobs:
           EXTRA_APPS: ${{ inputs.extra_apps }}
         run: |
           set -euo pipefail
-          order=()
-          if [ "$ERPNEXT" = true ]; then bench get-app --branch "$FRAPPE" erpnext; order+=(erpnext); fi
-          if [ "$HRMS" = true ]; then bench get-app --branch "$FRAPPE" hrms; order+=(hrms); fi
+          base=() order=()
+          if [ "$ERPNEXT" = true ]; then bench get-app --branch "$FRAPPE" erpnext; base+=(erpnext); fi
+          if [ "$HRMS" = true ]; then bench get-app --branch "$FRAPPE" hrms; base+=(hrms); fi
           while read -r name url branch; do
             [ -n "${name:-}" ] || continue
             bench get-app --branch "${branch:-$FRAPPE}" "$name" "$url"
@@ -156,7 +156,25 @@ jobs:
           bench get-app "$APP" "$GITHUB_WORKSPACE"
           order+=("$APP")
           bench setup requirements --dev
-          bench new-site --db-host 127.0.0.1 --db-port "$DB_PORT" --db-root-password root --admin-password admin test_site
+
+          # Installing Frappe + ERPNext on an empty site is 3+ min of every run and gives the same database
+          # each time: the first job on new commits of those apps saves it on the box, later jobs start from it.
+          cache=/home/runner/.crenya-ci/site-cache
+          mkdir -p "$cache"
+          key="$FRAPPE-$(for a in frappe "${base[@]}"; do git -C "apps/$a" rev-parse --short=12 HEAD; done | paste -sd-)"
+          snap="$cache/$key.sql"
+          new_site=(bench new-site --db-host 127.0.0.1 --db-port "$DB_PORT" --db-root-password root --admin-password admin)
+          if [ -s "$snap" ] && "${new_site[@]}" --source-sql "$snap" test_site; then
+            echo "site from $key"
+          else
+            [ -d sites/test_site ] && bench drop-site test_site --force --no-backup --db-root-password root
+            "${new_site[@]}" test_site
+            for a in "${base[@]}"; do bench --site test_site install-app "$a"; done
+            db=$(python -c 'import json;print(json.load(open("sites/test_site/site_config.json"))["db_name"])')
+            mariadb-dump --host 127.0.0.1 --port "$DB_PORT" -u root -proot --single-transaction "$db" > "$snap.$$" \
+              && mv "$snap.$$" "$snap" && echo "saved $key"
+            find "$cache" -name '*.sql*' -mtime +7 -delete
+          fi
           for a in "${order[@]}"; do bench --site test_site install-app "$a"; done
           bench --site test_site set-config allow_tests true
           if [ "$ERPNEXT" = true ] && [ "$BEFORE_TESTS" = true ]; then
