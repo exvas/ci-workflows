@@ -100,7 +100,8 @@ jobs:
         options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=10
     env:
       PYTHON: ${{ matrix.frappe == 'version-15' && '3.10' || '3.14' }}
-      NODE: ${{ matrix.frappe == 'version-15' && '18' || '24' }}
+      # v15 wants node >=18; 20, because apps' current frontends need it (react-router-dom 7 in KLiK_PoS)
+      NODE: ${{ matrix.frappe == 'version-15' && '20' || '24' }}
     steps:
       - uses: actions/checkout@v6
 
