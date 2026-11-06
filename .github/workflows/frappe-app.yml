@@ -55,8 +55,9 @@ on:
         default: ''
       require_tests:
         description: |
-          fail when Frappe ran no tests. false only for an app with no Frappe tests (its tests run elsewhere,
-          e.g. standalone scripts in another job); the check then still proves the app installs
+          fail when Frappe ran no tests although the app has test files (test_*.py). An app with no test files at
+          all passes with a notice (it installs and migrates). false: also pass when its test files ran nothing
+          (its tests run elsewhere, e.g. standalone scripts in another job)
         type: boolean
         default: true
       site_config:
@@ -229,5 +230,14 @@ jobs:
           bench --site test_site run-tests --app "$APP" $ARGS 2>&1 | tee "$RUNNER_TEMP/tests.log"
           # a green check must mean tests ran: a moved test folder or a bad --module ran none
           grep -qE "^Ran [1-9][0-9]* tests?" "$RUNNER_TEMP/tests.log" && exit 0
-          [ "$REQUIRE" = true ] && { echo "::error::no tests ran"; exit 1; }
+          # An app with NO test files at all (most client apps) cannot run any: the job still proved it installs and
+          # migrates on a fresh ERPNext site, so it passes with a notice instead of holding every PR red for ever
+          # (exvas/dhofar_glass#34, 11-06). Test files that exist but did not run stay a failure (a moved folder,
+          # a bad --module): that is the case this check is for.
+          files=$(find "apps/$APP" -name 'test_*.py' -not -path '*/node_modules/*' -not -path '*/.git/*' | head -1)
+          if [ -z "$files" ]; then
+            echo "::notice::$APP has no test files: no tests to run; the app installed and migrated on a fresh site. Add tests to cover its logic."
+            exit 0
+          fi
+          [ "$REQUIRE" = true ] && { echo "::error::no tests ran ($APP has test files, e.g. $files)"; exit 1; }
           echo "::notice::no Frappe tests (require_tests: false): the app installed"
