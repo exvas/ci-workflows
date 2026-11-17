@@ -215,7 +215,31 @@ jobs:
               bench --site test_site run-tests --app erpnext --module erpnext.tests.bootstrap_test_data
             fi
           fi
-          bench build
+          # `bench build` builds the assets of EVERY app: ~6 min of a 24 min job (erptrue_app, 11-17), and for
+          # every app except the one under test the result is the same until that app's commit moves. The first
+          # job on new commits saves what the build wrote there (files git does not track, minus dependencies)
+          # with the assets manifest; later jobs unpack it and build only the app under test, whose entries
+          # `bench build --app` merges into the manifest. Anything unexpected: the full build, as before.
+          acache=/home/runner/.crenya-ci/asset-cache
+          mkdir -p "$acache"
+          others=()
+          for a in frappe "${base[@]}" "${order[@]}"; do [ "$a" = "$APP" ] || others+=("$a"); done
+          akey="$FRAPPE-$(for a in "${others[@]}"; do echo "$a@$(git -C "apps/$a" rev-parse HEAD)"; done | sha1sum | cut -c1-20)"
+          atar="$acache/$akey.tar"
+          if [ -s "$atar" ] && tar -xf "$atar" && [ -s sites/assets/assets.json ] && bench build --app "$APP"; then
+            echo "assets from $akey (built only $APP)"
+          else
+            bench build
+            list=$(mktemp)
+            for a in "${others[@]}"; do
+              git -C "apps/$a" ls-files --others \
+                | grep -vE '(^|/)(node_modules|__pycache__|\.git)/|\.egg-info/|\.pyc$' | sed "s#^#apps/$a/#" >> "$list" || true
+            done
+            for f in sites/assets/assets.json sites/assets/assets-rtl.json; do [ -f "$f" ] && echo "$f" >> "$list"; done
+            tar -cf "$atar.$$" -T "$list" && mv "$atar.$$" "$atar" && echo "saved assets $akey ($(du -h "$atar" | cut -f1))"
+            rm -f "$list" "$atar.$$"
+            find "$acache" -name '*.tar*' -mtime +7 -delete
+          fi
 
       - name: Tests
         working-directory: ${{ env.BENCH }}
