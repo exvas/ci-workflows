@@ -122,6 +122,18 @@ jobs:
         with:
           node-version: ${{ env.NODE }}
 
+      - name: Yarn 1
+        # bench init runs `yarn install --check-files`, which only Yarn 1 has. A box with Debian's cmdtest
+        # has an unrelated /usr/bin/yarn ("0.32+git"), and setup-node's Node may bring no yarn at all:
+        # install Yarn 1 for this job only, in its own folder, so parallel jobs never write a shared one
+        run: |
+          case "$(yarn --version 2>/dev/null)" in
+            1.*) echo "yarn $(yarn --version)"; exit 0 ;;
+          esac
+          npm i -g -q --prefix "$RUNNER_TEMP/yarn1" yarn@1
+          echo "$RUNNER_TEMP/yarn1/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yarn1/bin/yarn" --version
+
       - name: Packages
         env:
           EXTRA: ${{ inputs.apt_packages }}
