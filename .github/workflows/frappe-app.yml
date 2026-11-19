@@ -157,6 +157,15 @@ jobs:
           echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
           echo "GIT_SSH_COMMAND=ssh -i $RUNNER_TEMP/deploy_key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts" >> "$GITHUB_ENV"
 
+      # MariaDB clients from 11.4 on refuse a password login without TLS, and the mariadb:10.6 service
+      # (version-15) has none: every client of the job (mariadb, mariadb-dump, bench's own restore)
+      # reads $MYSQL_HOME/my.cnf. In the job's temp dir, not the shared HOME: jobs run side by side
+      - name: MariaDB client without TLS
+        run: |
+          mkdir -p "$RUNNER_TEMP/mariadb"
+          printf '[client-mariadb]\nskip-ssl\n' > "$RUNNER_TEMP/mariadb/my.cnf"
+          echo "MYSQL_HOME=$RUNNER_TEMP/mariadb" >> "$GITHUB_ENV"
+
       - name: Bench
         run: |
           pip install -q frappe-bench
