@@ -100,7 +100,8 @@ jobs:
         ports: ['3306']
         options: --health-cmd="mariadb-admin ping" --health-interval=5s --health-timeout=2s --health-retries=10
     env:
-      PYTHON: ${{ matrix.frappe == 'version-15' && '3.10' || '3.14' }}
+      # frappe 15.128.0 (11-24) needs Python >=3.11; 3.10 can no longer install version-15
+      PYTHON: ${{ matrix.frappe == 'version-15' && '3.11' || '3.14' }}
       # v15 wants node >=18; 20, because apps' current frontends need it (react-router-dom 7 in KLiK_PoS)
       NODE: ${{ matrix.frappe == 'version-15' && '20' || '24' }}
     steps:
